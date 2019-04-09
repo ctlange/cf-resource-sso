@@ -1,0 +1,202 @@
+#!/bin/bash
+# vim: set ft=sh
+
+set -e
+
+exec 3>&1 # make stdout available as fd 3 for the result
+exec 1>&2 # redirect all output to stderr for logging
+
+debugOutput() {
+	if [ "$DEBUG" != "" ]
+	then
+		echo $*
+	fi
+}
+
+if [ "$TMPDIR" = "" ]
+then
+	TMPDIR=/tmp
+fi
+
+payload=$(mktemp $TMPDIR/payload.XXXXXX)
+cat > $payload <&0
+
+if [ "$DEBUG" != "" ]
+then
+	echo $0 $*
+	env
+	echo
+	echo payload:
+	cat $payload
+fi
+
+cd $1
+
+
+
+api=$(jq -r '.source.api // ""' < $payload | tr -d '\r\n')
+organization=$(jq -r '.source.organization // ""' < $payload | tr -d '\r\n')
+space=$(jq -r '.source.space // ""' < $payload | tr -d '\r\n')
+authorized_grant_type=$(jq -r '.source.authorized_grant_type // ""' < $payload | tr -d '\r\n')
+client_id=$(jq -r '.source.client_id // ""' < $payload | tr -d '\r\n')
+client_secret=$(jq -r '.source.client_secret // ""' < $payload | tr -d '\r\n')
+credentials_endpoint=$(jq -r '.source.credentials_endpoint // ""' < $payload | tr -d '\r\n')
+token_url=$(jq -r '.source.token_url // ""' < $payload | tr -d '\r\n')
+
+manifest=$(jq -r '.params.manifest // ""' < $payload | tr -d '\r\n')
+debug=$(jq -r '.params.debug // ""' < $payload | tr -d '\r\n')
+vars_files=$(jq -r '.params.vars_files // ""' < $payload | tr -d '\r\n')
+no_start=$(jq -r '.params.no_start // ""' < $payload | tr -d '\r\n')
+app_cl_path=$(jq -r '.params.path // ""' < $payload | tr -d '\r\n')
+
+if [ "$debug" != "" ]
+then
+	DEBUG=1
+	echo $0 $*
+	env
+	echo
+	echo payload:
+	cat $payload
+fi
+
+
+if [ "$api" != "" ]
+then
+	echo api: $api
+fi
+echo organization: $organization
+echo space: $space
+echo authorized_grant_type: $authorized_grant_type
+if [ "$DEBUG" != "" ]
+then
+	echo client_id: $client_id
+	echo client_secret: $client_secret
+else
+	echo client_id: hidden
+	echo client_secret: hidden
+fi
+echo credentials_endpoint: $credentials_endpoint
+echo token_url: $token_url
+
+echo manifest: $manifest
+
+
+
+oauth_access_token=$(mktemp $TMPDIR/oauth_access_token.XXXXXX)
+debugOutput curl --user $client_id:$client_secret -d "grant_type=$authorized_grant_type" $token_url --output $oauth_access_token --fail --silent --show-error
+echo Get Oauth2 access token ...
+curl --user $client_id:$client_secret -d "grant_type=$authorized_grant_type" $token_url --output $oauth_access_token --fail --silent --show-error
+echo Get Oauth2 access token ... ok
+
+debugOutput oauth_access_token:
+if [ "$DEBUG" != "" ]
+then
+	cat $oauth_access_token
+fi
+
+access_token=$(jq -r '.access_token // ""' < $oauth_access_token | tr -d '\r\n')
+expires_in=$(jq -r '.expires_in // ""' < $oauth_access_token | tr -d '\r\n')
+jti=$(jq -r '.jti // ""' < $oauth_access_token | tr -d '\r\n')
+scope=$(jq -r '.scope // ""' < $oauth_access_token | tr -d '\r\n')
+token_type=$(jq -r '.token_type // ""' < $oauth_access_token | tr -d '\r\n')
+
+if [ "$DEBUG" != "" ]
+then
+	echo access_token: $access_token
+	echo jti: $jti
+else
+	echo access_token: hidden
+	echo jti: hidden
+fi
+echo expires_in: $expires_in
+echo scope: $scope
+echo token_type: $token_type
+
+
+
+cf_temp_credentials=$(mktemp $TMPDIR/cf_temp_credentials.XXXXXX)
+echo Retrieve credentials ...
+debugOutput curl -H "Authorization: Bearer $access_token" $credentials_endpoint --output $cf_temp_credentials --fail --silent --show-error
+curl -H "Authorization: Bearer $access_token" $credentials_endpoint --output $cf_temp_credentials --fail --silent --show-error
+echo Retrieve credentials ...ok
+
+cf_api_url=$(jq -r '.cf_api_url // ""' < $cf_temp_credentials | tr -d '\r\n')
+username=$(jq -r '.username // ""' < $cf_temp_credentials | tr -d '\r\n')
+password=$(jq -r '.password // ""' < $cf_temp_credentials | tr -d '\r\n')
+valid_until=$(jq -r '.valid_until // ""' < $cf_temp_credentials | tr -d '\r\n')
+
+if [ "$cf_api_url" = "" ]
+then
+	cf_api_url=$api
+fi
+
+if [ "$api" != "" ] && [ "$api" != "$cf_api_url" ]
+then
+	echo api != cf_api_url missmatched: $api != $cf_api_url
+	exit 1
+fi
+
+
+
+echo cf_api_url: $cf_api_url
+if [ "$DEBUG" != "" ]
+then
+	echo username: $username
+	echo password: $password
+else
+	echo username: hidden
+	echo password: hidden
+fi
+echo valid_until: $valid_until
+
+cf login -a $cf_api_url -u $username -p $password || exit 1
+cf target -s $space
+
+cf_temp_exec=$(mktemp $TMPDIR/cf_temp_exec.XXXXXX)
+chmod -v +x $cf_temp_exec
+echo "#!/bin/bash" > $cf_temp_exec
+
+mapfile -t environment_variables < <(jq -r '.params.environment_variables | keys[]' < $payload | tr -d '\r')
+for elm in "${environment_variables[@]}"
+do
+	val=$(jq -r '.params.environment_variables.'$elm' // ""' < $payload | tr -d '\r\n')
+	echo "$elm=$val" >> $cf_temp_exec
+	debugOutput environment_variable: $elm = $val
+done
+
+
+echo -n "exec cf push -f $manifest" >> $cf_temp_exec
+
+if [ "$vars_files" != "" ]
+then
+	echo -n " --vars-file=$vars_files"
+fi
+
+if [ "$no_start" != "" ]
+then
+	echo -n " --no-start"
+fi
+
+if [ "$app_cl_path" != "" ]
+then
+	echo -n " -p $app_cl_path"
+fi
+
+mapfile -t vars < <(jq -r '.params.vars | keys[]' < $payload | tr -d '\r')
+for elm in "${vars[@]}"
+do
+	val=$(jq -r '.params.vars.'$elm' // ""' < $payload | tr -d '\r\n')
+	echo -n " " >> $cf_temp_exec
+	echo -n "--var \"$elm=$val\"" >> $cf_temp_exec
+done
+echo "" >> $cf_temp_exec
+
+
+if [ "$DEBUG" != "" ]
+then
+	echo $cf_temp_exec
+	cat $cf_temp_exec
+fi
+$cf_temp_exec
+
+jq -n "{}" >&3
