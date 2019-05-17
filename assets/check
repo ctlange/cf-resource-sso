@@ -6,4 +6,4 @@ set -e
 echo $0 $* >&2
 env >&2
 
-echo '[]'
+echo '[{"id": "1"}]'

@@ -12,4 +12,4 @@ then
 	env
 fi
 
-jq -n "{}" >&3
+jq -n '{"version":{"id": "1"}}' >&3

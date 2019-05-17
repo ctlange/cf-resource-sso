@@ -199,4 +199,4 @@ then
 fi
 $cf_temp_exec
 
-jq -n "{}" >&3
+jq -n '{"version":{"id": "1"}}' >&3
