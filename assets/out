@@ -169,17 +169,20 @@ echo -n "exec cf push -f $manifest" >> $cf_temp_exec
 
 if [ "$vars_files" != "" ]
 then
-	echo -n " --vars-file=$vars_files"
+	echo -n " --vars-file=$vars_files" >> $cf_temp_exec
+	debugOutput variable files: $vars_files
 fi
 
 if [ "$no_start" != "" ]
 then
-	echo -n " --no-start"
+	echo -n " --no-start" >> $cf_temp_exec
+	debugOutput no start
 fi
 
 if [ "$app_cl_path" != "" ]
 then
-	echo -n " -p $app_cl_path"
+	echo -n " -p $app_cl_path" >> $cf_temp_exec
+	debugOutput path to upload: $app_cl_path
 fi
 
 mapfile -t vars < <(jq -r '.params.vars | keys[]' < $payload | tr -d '\r')
